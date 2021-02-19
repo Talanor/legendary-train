@@ -138,7 +138,7 @@ def get_next_cmd(paths_file, suffixes):
         pathes = [paths_file.readline()]
         if len(pathes[0].strip()) > 0:
             pathes = ["cat {}{}".format(pathes[0].decode("utf-8").strip(), suffix) for suffix in suffixes]
-    if len(pathes[0]) == 0:
+    if len(pathes) == 0 or len(pathes[0].strip()) == 0:
         pathes = [input("$> ")]
     return pathes
 

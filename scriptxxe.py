@@ -64,7 +64,11 @@ class InterceptorHttp(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             try:
                 content = bz2.decompress(base64.b64decode(self.path.split('?')[1]))
-                print(content.decode('utf-8'))
+                try:
+                    print(content.decode('utf-8'))
+                except UnicodeDecodeError:
+                    print(content)
+
                 if cmd[0] == "cat" and STORE_PATH is not None:
                     tpath = pathlib.PurePath(cmd[1])
                     if tpath.is_absolute():
